@@ -1,4 +1,6 @@
 #include <spdlog/spdlog.h>
+#include <boost/bind/bind.hpp>
+#include <boost/thread/thread.hpp>
 #include "asio.hpp"
 
 namespace {
@@ -18,6 +20,8 @@ void print(
 void bind_args_to_completion_handler();
 
 void bind_member_function_to_completion_handler();
+
+void synchronize_handlers_for_multithreading();
 
 class printer {
 public:
@@ -48,6 +52,62 @@ protected:
     asio::steady_timer _timer;
     int _count;
 };
+
+
+class printer_v2 {
+private:
+    void print1() {
+        if (_count < 10) {
+            spdlog::info("count: {}", _count);
+            ++_count;
+
+            _timer1.expires_at(
+                _timer1.expiry() + asio::chrono::seconds(1));
+            _timer1.async_wait(asio::bind_executor(
+                _strand,
+                std::bind(&printer_v2::print1, this)));
+        }
+    }
+
+    void print2() {
+        if (_count < 10) {
+            spdlog::info("count: {}", _count);
+            ++_count;
+
+            _timer2.expires_at(
+                _timer2.expiry() + asio::chrono::seconds(1));
+            _timer2.async_wait(asio::bind_executor(
+                _strand,
+                std::bind(&printer_v2::print2, this)));
+        }
+    }
+
+public:
+    printer_v2(asio::io_context &io)
+        : _strand(asio::make_strand(io)),
+          _timer1(io, asio::chrono::seconds(1)),
+          _timer2(io, asio::chrono::seconds(1)),
+          _count(0) {
+        _timer1.async_wait(asio::bind_executor(
+            _strand,
+            std::bind(&printer_v2::print1, this)));
+
+        _timer2.async_wait(asio::bind_executor(
+            _strand,
+            std::bind(&printer_v2::print2, this)));
+    }
+
+    ~printer_v2() {
+        spdlog::info("printer_v2 destructed. final count was {}",
+                     this->_count);
+    }
+
+private:
+    asio::strand<asio::io_context::executor_type> _strand;
+    asio::steady_timer _timer1;
+    asio::steady_timer _timer2;
+    int _count;
+};
 }
 
 auto main() -> int {
@@ -57,7 +117,8 @@ auto main() -> int {
     // ::do_timer_sync();
     // ::do_timer_async();
     // ::bind_args_to_completion_handler();
-    bind_member_function_to_completion_handler();
+    // bind_member_function_to_completion_handler();
+    synchronize_handlers_for_multithreading();
 
     return EXIT_OK;
 }
@@ -150,5 +211,14 @@ void bind_member_function_to_completion_handler() {
     asio::io_context io_ctx;
     printer printer{io_ctx, asio::chrono::seconds(4)};
     io_ctx.run();
+}
+
+void synchronize_handlers_for_multithreading() {
+    asio::io_context io;
+    printer_v2 p{io};
+
+    boost::thread t(boost::bind(&asio::io_context::run, &io));
+    io.run();
+    t.join();
 }
 }
